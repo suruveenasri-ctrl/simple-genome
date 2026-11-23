@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simple Genome Browser</title>
+<style>
+:root{--bg:#f6f8fa;--card:#fff;--text:#1f2933;--muted:#667085;--line:#d9dee5;--accent:#2563eb}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--text)}
+header{background:#0f2a43;color:#fff;padding:16px 24px}
+header h1{margin:0;font-size:22px}
+header p{margin:4px 0 0;font-size:13px;opacity:.8}
+main{max-width:1200px;margin:16px auto;padding:0 16px;display:grid;gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+input,button{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text)}
+button{cursor:pointer}button:hover{border-color:var(--accent);color:var(--accent)}
+.stats{display:flex;gap:24px;flex-wrap:wrap;font-size:14px;color:var(--muted)}
+.stats b{color:var(--text)}
+canvas{width:100%;display:block;cursor:grab;border:1px solid var(--line);border-radius:6px;background:#fff}
+canvas:active{cursor:grabbing}
+#info{font-size:14px;line-height:1.6}
+#info code{display:block;word-break:break-all;background:var(--bg);padding:8px;border-radius:6px;font-size:12px;max-height:110px;overflow:auto}
+.tbl{max-height:260px;overflow:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line)}
+tr.row{cursor:pointer}tr.row:hover{background:#eef4ff}
+.hint{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header><h1>Simple Genome Browser</h1><p id="desc"></p></header>
+<main>
+  <div class="card stats" id="stats"></div>
+  <div class="card">
+    <div class="bar" style="margin-bottom:10px">
+      <input id="region" size="16" placeholder="start-end (bp)">
+      <button id="go">Go</button>
+      <button id="zin">＋</button><button id="zout">－</button>
+      <button id="left">◀</button><button id="right">▶</button>
+      <button id="all">Whole genome</button>
+      <input id="search" placeholder="Search gene / product…" size="22">
+    </div>
+    <canvas id="cv"></canvas>
+    <div class="hint" style="margin-top:6px">Drag to pan · scroll to zoom · click a gene for details · zoom in far to see the DNA letters</div>
+  </div>
+  <div class="card" id="info"><span class="hint">Click a gene to see its details.</span></div>
+  <div class="card tbl"><table><thead><tr><th>Name</th><th>Type</th><th>Location</th><th>Strand</th><th>Product</th></tr></thead><tbody id="tb"></tbody></table></div>
+</main>
+<script src="data.js"></script>
+<script>
+const G = GENOME, cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const $ = id => document.getElementById(id);
+let view = {s: 0, e: Math.min(G.length, 10000)}, sel = null, hits = [];
+const COL = {A:'#16a34a', C:'#2563eb', G:'#d97706', T:'#dc2626', N:'#888'};
+const LANE = 26, TOP = 44;
+
+let laneEnd = [];
+G.features.forEach(f => { let l = 0; while (laneEnd[l] !== undefined && laneEnd[l] > f.start - 50) l++; laneEnd[l] = f.end; f.lane = l; });
+const lanes = Math.max(1, laneEnd.length);
+const gcTop = TOP + lanes * LANE + 24, gcH = 70, seqY = gcTop + gcH + 36;
+cv.style.height = (seqY + 30) + 'px';
+const dpr = window.devicePixelRatio || 1;
+function resize(){ cv.width = cv.clientWidth * dpr; cv.height = cv.clientHeight * dpr; draw(); }
+
+function niceStep(raw){ const p = Math.pow(10, Math.floor(Math.log10(raw))); for (const m of [1,2,5,10]) if (m*p >= raw) return m*p; return 10*p; }
+const fmt = n => Math.round(n).toLocaleString();
+
+function draw(){
+  const W = cv.clientWidth;
+  ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,W,cv.clientHeight);
+  const span = view.e - view.s, X = b => (b - view.s) / span * W;
+  hits = [];
+  ctx.font = '11px system-ui'; ctx.fillStyle = '#667085'; ctx.strokeStyle = '#98a2b3'; ctx.textAlign = 'center';
+  const step = niceStep(span / 8);
+  ctx.beginPath(); ctx.moveTo(0,28); ctx.lineTo(W,28); ctx.stroke();
+  for (let t = Math.ceil(view.s/step)*step; t <= view.e; t += step){
+    const x = X(t); ctx.beginPath(); ctx.moveTo(x,28); ctx.lineTo(x,34); ctx.stroke(); ctx.fillText(fmt(t), x, 20);
+  }
+  ctx.textAlign = 'left';
+  G.features.forEach((f, i) => {
+    if (f.end < view.s || f.start > view.e) return;
+    const x1 = X(f.start), x2 = X(f.end), w = Math.max(x2 - x1, 1), y = TOP + f.lane * LANE, h = 18;
+    const head = Math.min(10, w / 2), fwd = f.strand === 1;
+    ctx.beginPath();
+    if (fwd){ ctx.moveTo(x1,y); ctx.lineTo(x1+w-head,y); ctx.lineTo(x1+w,y+h/2); ctx.lineTo(x1+w-head,y+h); ctx.lineTo(x1,y+h); }
+    else    { ctx.moveTo(x1+w,y); ctx.lineTo(x1+head,y); ctx.lineTo(x1,y+h/2); ctx.lineTo(x1+head,y+h); ctx.lineTo(x1+w,y+h); }
+    ctx.closePath();
+    ctx.fillStyle = f.type === 'CDS' ? (fwd ? '#3b82f6' : '#f97316') : '#8b5cf6';
+    ctx.fill();
+    if (sel === i){ ctx.lineWidth = 2.5; ctx.strokeStyle = '#111'; ctx.stroke(); ctx.lineWidth = 1; ctx.strokeStyle = '#98a2b3'; }
+    if (w > 45){ ctx.fillStyle = '#fff'; ctx.save(); ctx.beginPath(); ctx.rect(x1,y,w,h); ctx.clip(); ctx.fillText(f.name, x1 + (fwd?4:head+2), y + 13); ctx.restore(); }
+    hits.push({i, x1, x2: x1 + w, y, y2: y + h});
+  });
+  ctx.fillStyle = '#667085'; ctx.fillText('Genes  (blue = + strand, orange = − strand)', 4, TOP - 6);
+  ctx.fillText('GC content (500 bp windows)', 4, gcTop - 6);
+  ctx.strokeStyle = '#e4e7ec'; ctx.strokeRect(0, gcTop, W, gcH);
+  const Y = v => gcTop + gcH - Math.min(Math.max((v - 0.2) / 0.6, 0), 1) * gcH;
+  ctx.strokeStyle = '#94a3b8'; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(0,Y(G.gc/100)); ctx.lineTo(W,Y(G.gc/100)); ctx.stroke(); ctx.setLineDash([]);
+  ctx.strokeStyle = '#059669'; ctx.lineWidth = 1.5; ctx.beginPath(); let first = true;
+  G.gc_windows.forEach(w => { const mid = w.s + w.w/2; if (mid < view.s - 2000 || mid > view.e + 2000) return;
+    const x = X(mid), y = Y(w.v); if (first){ ctx.moveTo(x,y); first = false; } else ctx.lineTo(x,y); });
+  ctx.stroke(); ctx.lineWidth = 1;
+  const bw = W / span;
+  ctx.fillStyle = '#667085'; ctx.fillText('Sequence', 4, seqY - 18);
+  if (bw >= 7){
+    ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
+    for (let b = Math.max(0, Math.floor(view.s)); b < Math.min(G.length, view.e); b++){
+      const c = G.sequence[b]; ctx.fillStyle = COL[c] || COL.N; ctx.fillText(c, X(b) + bw/2, seqY);
+    }
+  } else { ctx.fillStyle = '#98a2b3'; ctx.fillText('(zoom in to ~' + Math.floor(W/7) + ' bp to see bases)', 4, seqY); }
+  $('region').value = Math.floor(view.s) + 1 + '-' + Math.ceil(view.e);
+}
+
+function goto(s, e){
+  const span = Math.min(Math.max(e - s, 20), G.length);
+  s = Math.max(0, Math.min(s, G.length - span)); view = {s, e: s + span}; draw();
+}
+function zoom(f, c){
+  c = c ?? (view.s + view.e)/2;
+  const sp = (view.e - view.s) * f, frac = (c - view.s)/(view.e - view.s), s = c - frac*sp;
+  goto(s, s + sp);
+}
+const pan = d => { const sp = view.e - view.s; goto(view.s + d*sp, view.e + d*sp); };
+
+function revcomp(s){ const m={A:'T',T:'A',G:'C',C:'G'}; return s.split('').reverse().map(c=>m[c]||'N').join(''); }
+function select(i, zoomTo){
+  sel = i; const f = G.features[i];
+  if (zoomTo){ const pad = (f.end - f.start) * 0.3 + 100; goto(f.start - pad, f.end + pad); } else draw();
+  let dna = G.sequence.slice(f.start, f.end); if (f.strand === -1) dna = revcomp(dna);
+  const gcf = ((dna.match(/[GC]/g)||[]).length / dna.length * 100).toFixed(1);
+  $('info').innerHTML = `<b>${f.name}</b> &nbsp;<span class="hint">${f.type} · ${f.locus_tag}</span><br>
+    Location: ${fmt(f.start+1)}–${fmt(f.end)} (${f.strand===1?'+':'−'} strand) · ${fmt(f.end-f.start)} bp · GC ${gcf}%<br>
+    Product: ${f.product}${f.aa ? ' · ' + f.aa + ' aa' : ''}<br>
+    ${f.translation ? '<b>Protein:</b><code>' + f.translation + '</code>' : ''}
+    <div class="bar" style="margin-top:8px"><button id="dl">Download gene FASTA</button><button id="zt">Zoom to gene</button></div>`;
+  $('dl').onclick = () => { const t = `>${f.name}|${f.locus_tag}|${G.id}:${f.start+1}-${f.end}\n${dna.match(/.{1,70}/g).join('\n')}\n`;
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([t])); a.download = f.name + '.fasta'; a.click(); };
+  $('zt').onclick = () => select(i, true);
+}
+
+function fillTable(filter=''){
+  const q = filter.toLowerCase(); let html = '';
+  G.features.forEach((f,i) => { if (q && !(f.name+f.product+f.locus_tag).toLowerCase().includes(q)) return;
+    html += `<tr class="row" data-i="${i}"><td>${f.name}</td><td>${f.type}</td><td>${fmt(f.start+1)}–${fmt(f.end)}</td><td>${f.strand===1?'+':'−'}</td><td>${f.product}</td></tr>`; });
+  $('tb').innerHTML = html;
+}
+$('tb').onclick = e => { const r = e.target.closest('tr'); if (r) select(+r.dataset.i, true); };
+$('search').oninput = e => fillTable(e.target.value);
+$('search').onkeydown = e => { if (e.key === 'Enter'){ const r = $('tb').querySelector('tr'); if (r) select(+r.dataset.i, true); } };
+
+let drag = null;
+cv.onmousedown = e => { drag = {x: e.clientX, s: view.s, e: view.e, moved: false}; };
+window.onmousemove = e => { if (!drag) return; const dx = e.clientX - drag.x; if (Math.abs(dx) > 3) drag.moved = true;
+  const bp = dx / cv.clientWidth * (drag.e - drag.s); goto(drag.s - bp, drag.e - bp); };
+window.onmouseup = e => { if (drag && !drag.moved){ const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    const h = hits.find(h => x >= h.x1 && x <= h.x2 && y >= h.y && y <= h.y2); if (h) select(h.i, false); } drag = null; };
+cv.onwheel = e => { e.preventDefault(); const r = cv.getBoundingClientRect();
+  zoom(e.deltaY > 0 ? 1.25 : 0.8, view.s + (e.clientX - r.left)/r.width * (view.e - view.s)); };
+$('zin').onclick = () => zoom(0.5); $('zout').onclick = () => zoom(2);
+$('left').onclick = () => pan(-0.5); $('right').onclick = () => pan(0.5);
+$('all').onclick = () => goto(0, G.length);
+$('go').onclick = () => { const m = $('region').value.replace(/,/g,'').match(/(\d+)\D+(\d+)/); if (m) goto(+m[1]-1, +m[2]); };
+$('region').onkeydown = e => { if (e.key === 'Enter') $('go').click(); };
+window.onresize = resize;
+
+$('desc').textContent = G.id + ' — ' + G.description;
+$('stats').innerHTML = `<span>Length: <b>${fmt(G.length)} bp</b></span><span>GC content: <b>${G.gc}%</b></span><span>Features: <b>${G.n_features}</b></span>`;
+fillTable(); resize();
+</script>
+</body>
+</html>
